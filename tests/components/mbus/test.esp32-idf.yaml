@@ -1,0 +1,23 @@
+uart:
+  - id: m_bus
+    data_bits: 8
+    baud_rate: 2400
+    parity: EVEN
+    stop_bits: 1
+    tx_pin: 17
+    rx_pin: 16
+
+mbus:
+  secondary_address: 0x0025426642042002
+  interval: "5s"
+
+sensor:
+  - platform: mbus_sensor
+    data_index: 0
+    factor: 10
+    name: "Power Consumption"
+    accuracy_decimals: 1
+    device_class: power
+    icon: "mdi:flash"
+    state_class: measurement
+    unit_of_measurement: "Wh"
