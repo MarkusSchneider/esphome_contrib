@@ -1,39 +1,40 @@
 #pragma once
-#ifdef USE_ESP_IDF
+#ifdef USE_ESP32
 
 #include "esphome/core/defines.h"
+#include "esphome/core/helpers.h"
+#include "esphome/core/string_ref.h"
 #include <esp_http_server.h>
 
 #include <atomic>
 #include <functional>
 #include <list>
 #include <map>
-#include <set>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifdef USE_WEBSERVER
+#include "esphome/components/web_server/list_entities.h"
+#endif
 
 namespace esphome {
 #ifdef USE_WEBSERVER
 namespace web_server {
 class WebServer;
-class ListEntitiesIterator;
 };  // namespace web_server
 #endif
 namespace web_server_idf {
 
-#define F(string_literal) (string_literal)
-#define PGM_P const char *
-#define strncpy_P strncpy
-
-using String = std::string;
-
 class AsyncWebParameter {
  public:
-  AsyncWebParameter(std::string value) : value_(std::move(value)) {}
+  AsyncWebParameter(std::string name, std::string value) : name_(std::move(name)), value_(std::move(value)) {}
+  const std::string &name() const { return this->name_; }
   const std::string &value() const { return this->value_; }
 
  protected:
+  std::string name_;
   std::string value_;
 };
 
@@ -85,6 +86,7 @@ class AsyncResponseStream : public AsyncWebServerResponse {
   void print(const std::string &str) { this->content_.append(str); }
   void print(float value);
   void printf(const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+  void write(uint8_t c) { this->content_.push_back(static_cast<char>(c)); }
 
  protected:
   std::string content_;
@@ -110,7 +112,15 @@ class AsyncWebServerRequest {
   ~AsyncWebServerRequest();
 
   http_method method() const { return static_cast<http_method>(this->req_->method); }
-  std::string url() const;
+  static constexpr size_t URL_BUF_SIZE = CONFIG_HTTPD_MAX_URI_LEN + 1;  ///< Buffer size for url_to()
+  /// Write URL (without query string) to buffer, returns StringRef pointing to buffer.
+  /// URL is decoded (e.g., %20 -> space).
+  StringRef url_to(std::span<char, URL_BUF_SIZE> buffer) const;
+  /// Get URL as std::string. Prefer url_to() to avoid heap allocation.
+  std::string url() const {
+    char buffer[URL_BUF_SIZE];
+    return std::string(this->url_to(buffer));
+  }
   std::string host() const;
   // NOLINTNEXTLINE(readability-identifier-naming)
   size_t contentLength() const { return this->req_->content_len; }
@@ -174,7 +184,11 @@ class AsyncWebServerRequest {
  protected:
   httpd_req_t *req_;
   AsyncWebServerResponse *rsp_{};
-  std::map<std::string, AsyncWebParameter *> params_;
+  // Use vector instead of map/unordered_map: most requests have 0-3 params, so linear search
+  // is faster than tree/hash overhead. AsyncWebParameter stores both name and value to avoid
+  // duplicate storage. Only successful lookups are cached to prevent cache pollution when
+  // handlers check for optional parameters that don't exist.
+  std::vector<AsyncWebParameter *> params_;
   std::string post_query_;
   AsyncWebServerRequest(httpd_req_t *req) : req_(req) {}
   AsyncWebServerRequest(httpd_req_t *req, std::string post_query) : req_(req), post_query_(std::move(post_query)) {}
@@ -200,12 +214,15 @@ class AsyncWebServer {
     return *handler;
   }
 
+  httpd_handle_t get_server() { return this->server_; }
+
  protected:
   uint16_t port_{};
   httpd_handle_t server_{};
   static esp_err_t request_handler(httpd_req_t *r);
   static esp_err_t request_post_handler(httpd_req_t *r);
   esp_err_t request_handler_(AsyncWebServerRequest *request) const;
+  static void safe_close_with_shutdown(httpd_handle_t hd, int sockfd);
 #ifdef USE_WEBSERVER_OTA
   esp_err_t handle_multipart_upload_(httpd_req_t *r, const char *content_type);
 #endif
@@ -280,9 +297,11 @@ class AsyncEventSourceResponse {
   std::atomic<int> fd_{};
   std::vector<DeferredEvent> deferred_queue_;
   esphome::web_server::WebServer *web_server_;
-  std::unique_ptr<esphome::web_server::ListEntitiesIterator> entities_iterator_;
+  esphome::web_server::ListEntitiesIterator entities_iterator_;
   std::string event_buffer_{""};
   size_t event_bytes_sent_;
+  uint16_t consecutive_send_failures_{0};
+  static constexpr uint16_t MAX_CONSECUTIVE_SEND_FAILURES = 2500;  // ~20 seconds at 125Hz loop rate
 };
 
 using AsyncEventSourceClient = AsyncEventSourceResponse;
@@ -297,7 +316,10 @@ class AsyncEventSource : public AsyncWebHandler {
 
   // NOLINTNEXTLINE(readability-identifier-naming)
   bool canHandle(AsyncWebServerRequest *request) const override {
-    return request->method() == HTTP_GET && request->url() == this->url_;
+    if (request->method() != HTTP_GET)
+      return false;
+    char url_buf[AsyncWebServerRequest::URL_BUF_SIZE];
+    return request->url_to(url_buf) == this->url_;
   }
   // NOLINTNEXTLINE(readability-identifier-naming)
   void handleRequest(AsyncWebServerRequest *request) override;
@@ -313,11 +335,19 @@ class AsyncEventSource : public AsyncWebHandler {
 
  protected:
   std::string url_;
-  std::set<AsyncEventSourceResponse *> sessions_;
+  // Use vector instead of set: SSE sessions are typically 1-5 connections (browsers, dashboards).
+  // Linear search is faster than red-black tree overhead for this small dataset.
+  // Only operations needed: add session, remove session, iterate sessions - no need for sorted order.
+  std::vector<AsyncEventSourceResponse *> sessions_;
   connect_handler_t on_connect_{};
   esphome::web_server::WebServer *web_server_;
 };
 #endif  // USE_WEBSERVER
+
+struct HttpHeader {
+  const char *name;
+  const char *value;
+};
 
 class DefaultHeaders {
   friend class AsyncWebServerRequest;
@@ -327,13 +357,14 @@ class DefaultHeaders {
 
  public:
   // NOLINTNEXTLINE(readability-identifier-naming)
-  void addHeader(const char *name, const char *value) { this->headers_.emplace_back(name, value); }
+  void addHeader(const char *name, const char *value) { this->headers_.push_back({name, value}); }
 
   // NOLINTNEXTLINE(readability-identifier-naming)
   static DefaultHeaders &Instance();
 
  protected:
-  std::vector<std::pair<std::string, std::string>> headers_;
+  // Stack-allocated, no reallocation machinery. Count defined in web_server_base where headers are added.
+  StaticVector<HttpHeader, WEB_SERVER_DEFAULT_HEADERS_COUNT> headers_;
 };
 
 }  // namespace web_server_idf
@@ -341,4 +372,4 @@ class DefaultHeaders {
 
 using namespace esphome::web_server_idf;  // NOLINT(google-global-names-in-headers)
 
-#endif  // !defined(USE_ESP_IDF)
+#endif  // !defined(USE_ESP32)
