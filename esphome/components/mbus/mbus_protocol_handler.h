@@ -15,6 +15,7 @@ namespace mbus {
 class MBus;
 class MBusCommand;
 
+/// @brief M-Bus protocol handler managing command queue and response parsing
 class MBusProtocolHandler {
  public:
   static const uint32_t RX_TIMEOUT{1000};
@@ -48,6 +49,7 @@ class MBusProtocolHandler {
   bool waiting_for_response_{false};
 };
 
+/// @brief M-Bus command structure with response handler callback
 class MBusCommand {
  public:
   std::unique_ptr<MBusFrame> command{nullptr};
@@ -69,13 +71,6 @@ class MBusCommand {
     this->response_handler = response_handler;
     this->wait_for_response = wait_for_response;
   }
-
-  // ~MBusCommand() {
-  //   if (this->command != nullptr) {
-  //     delete this->command;
-  //     this->command = nullptr;
-  //   }
-  // }
 };
 
 }  // namespace mbus

@@ -28,13 +28,13 @@ MBusFrame::MBusFrame(MBusFrameType frame_type) {
 
     case MBUS_FRAME_TYPE_CONTROL:
       this->start = MBusFrameDefinition::CONTROL_FRAME.start_bit;
-      this->length = MBusFrameDefinition::CONTROL_FRAME.lenght;
+      this->length = MBusFrameDefinition::CONTROL_FRAME.length;
       this->stop = MBusFrameDefinition::CONTROL_FRAME.stop_bit;
       break;
 
     case MBUS_FRAME_TYPE_LONG:
       this->start = MBusFrameDefinition::LONG_FRAME.start_bit;
-      this->length = MBusFrameDefinition::LONG_FRAME.lenght;
+      this->length = MBusFrameDefinition::LONG_FRAME.length;
       this->stop = MBusFrameDefinition::LONG_FRAME.stop_bit;
       break;
   }
@@ -276,11 +276,14 @@ void MBusDataVariable::dump() const {
   for (auto i = 0; i < records->size(); i++) {
     auto record = records->at(i);
     auto mbus_data = record.parse(i);
+    // Convert StaticVector to std::vector for format_hex_pretty()
+    std::vector<uint8_t> dife_vec(record.drh.dib.dife.begin(), record.drh.dib.dife.end());
+    std::vector<uint8_t> vife_vec(record.drh.vib.vife.begin(), record.drh.vib.vife.end());
     ESP_LOGD(TAG,
              "\t  DIF: 0x%.2X DIFE: %s VIF: 0x%.2X VIFE: %s Data: %s. (ID: %d, Function: %s, Unit: %s, Tariff: %d, "
              "Type: %s, %f)",
-             record.drh.dib.dif, format_hex_pretty(record.drh.dib.dife).c_str(), record.drh.vib.vif,
-             format_hex_pretty(record.drh.vib.vife).c_str(), format_hex_pretty(record.data).c_str(), mbus_data->id,
+             record.drh.dib.dif, format_hex_pretty(dife_vec).c_str(), record.drh.vib.vif,
+             format_hex_pretty(vife_vec).c_str(), format_hex_pretty(record.data).c_str(), mbus_data->id,
              mbus_data->function, mbus_data->unit, mbus_data->tariff, mbus_data->get_data_type_str(), mbus_data->value);
   }
 }

@@ -9,6 +9,9 @@
 namespace esphome {
 namespace mbus {
 
+/// @brief M-Bus component for communication with M-Bus devices
+/// Supports primary and secondary addressing, automatic device scanning,
+/// and periodic data reading from configured sensors.
 class MBus : public uart::UARTDevice, public Component {
  public:
   static const uint8_t PRIMARY_ADDRESS_MAX = 250;

@@ -3,11 +3,14 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include "esphome/core/helpers.h"
 
 namespace esphome {
 namespace mbus {
 
 static const uint8_t MBUS_FRAME_DATA_LENGTH = 252;
+static const uint8_t MBUS_MAX_DIFE_COUNT = 10;  // Maximum DIFE extensions
+static const uint8_t MBUS_MAX_VIFE_COUNT = 10;  // Maximum VIFE extensions
 
 enum MBusFrameType {
   MBUS_FRAME_TYPE_EMPTY = 0x00,
@@ -42,6 +45,7 @@ class MBusDataVariable;
 class MBusDataVariableHeader;
 class MBusValue;
 
+/// @brief M-Bus frame structure supporting ACK, SHORT, CONTROL and LONG frame types
 class MBusFrame {
  public:
   uint8_t start{0};
@@ -55,8 +59,6 @@ class MBusFrame {
   std::unique_ptr<MBusDataVariable> variable_data{nullptr};
 
   MBusFrameType frame_type{MBusFrameType::MBUS_FRAME_TYPE_EMPTY};
-
-  // void *next;  // pointer to next mbus_frame for multi-telegram replies
 
   MBusFrame(MBusFrameType frame_type);
   MBusFrame(MBusFrame &frame);
@@ -88,43 +90,50 @@ class MBusDataVifMask {
   static const uint8_t UNIT_AND_MULTIPLIER = 0x7F;
 };
 
-// DIF (Data Information Field)
-// |   Bit 7   |    6    |    5       4    |  3     2     1     0 |
-// | Extension | LSB of  |  Function Field |  Data Field:         |
-// | Bit       | storage |                 |  Length and coding   |
-// |           | number  |                 |  of data             |
-//
-// DIFE (Data Information Field Extension)
-// |   Bit 7   |    6    |    5       4    |  3     2     1     0 |
-// | Extension | Device  |      Tariff     |    Storage Number    |
-// | Bit       |  Unit   |                 |                      |
+/// @brief Data Information Field (DIF) and extensions (DIFE)
+/// DIF (Data Information Field)
+/// |   Bit 7   |    6    |    5       4    |  3     2     1     0 |
+/// | Extension | LSB of  |  Function Field |  Data Field:         |
+/// | Bit       | storage |                 |  Length and coding   |
+/// |           | number  |                 |  of data             |
+///
+/// DIFE (Data Information Field Extension)
+/// |   Bit 7   |    6    |    5       4    |  3     2     1     0 |
+/// | Extension | Device  |      Tariff     |    Storage Number    |
+/// | Bit       |  Unit   |                 |                      |
 class MBusDataInformationBlock {
  public:
   uint8_t dif{0};
-  std::vector<uint8_t> dife;
+  StaticVector<uint8_t, MBUS_MAX_DIFE_COUNT> dife;
 };
 
-// VIF (VAlue Information Field)
-// |   Bit 7   | 6      5       4       3       2       1      0  |
-// | Extension |                Unit and Multiplier               |
-// | Bit       |                                                  |
+/// @brief Value Information Field (VIF) and extensions (VIFE)
+/// VIF (Value Information Field)
+/// |   Bit 7   | 6      5       4       3       2       1      0  |
+/// | Extension |                Unit and Multiplier               |
+/// | Bit       |                                                  |
 class MBusValueInformationBlock {
  public:
   uint8_t vif{0};
-  std::vector<uint8_t> vife;
+  StaticVector<uint8_t, MBUS_MAX_VIFE_COUNT> vife;
 };
 
+/// @brief M-Bus data record header containing DIF/DIFE and VIF/VIFE blocks
 class MBusDataRecordHeader {
  public:
   MBusDataInformationBlock dib;
   MBusValueInformationBlock vib;
 };
 
+/// @brief M-Bus data record with header and payload data
 class MBusDataRecord {
  public:
   MBusDataRecordHeader drh;
   std::vector<uint8_t> data;
 
+  /// @brief Parse the data record and extract the value with metadata
+  /// @param id Record identifier/index
+  /// @return Parsed M-Bus value with unit, function, and data
   std::unique_ptr<MBusValue> parse(uint8_t id);
   // void *next;
 
@@ -137,19 +146,21 @@ class MBusDataRecord {
   float parse_value_(const MBusDataRecord *record, const MBusDataType &data_type);
 };
 
-// Ident.Nr.   Manufr. Version Medium Access No. Status  Signature
-// 4 Byte BCD  2 Byte  1 Byte  1 Byte   1 Byte   1 Byte  2 Byte
+/// @brief M-Bus variable data header structure
+/// Ident.Nr.   Manufr. Version Medium Access No. Status  Signature
+/// 4 Byte BCD  2 Byte  1 Byte  1 Byte   1 Byte   1 Byte  2 Byte
 class MBusDataVariableHeader {
  public:
-  uint8_t id[4]{0, 0, 0, 0};
-  uint8_t manufacturer[2]{0, 0};
-  uint8_t version{0};
-  uint8_t medium{0};
-  uint8_t access_no{0};
-  uint8_t status{0};
-  uint8_t signature[2]{0, 0};
+  uint8_t id[4]{0, 0, 0, 0};      ///< Device identification number (BCD)
+  uint8_t manufacturer[2]{0, 0};  ///< Manufacturer code
+  uint8_t version{0};             ///< Device version
+  uint8_t medium{0};              ///< Medium type (e.g., water, gas, electricity)
+  uint8_t access_no{0};           ///< Access number
+  uint8_t status{0};              ///< Device status
+  uint8_t signature[2]{0, 0};     ///< Data signature
 };
 
+/// @brief M-Bus variable data structure containing header and data records
 class MBusDataVariable {
  public:
   MBusDataVariableHeader header;
@@ -160,9 +171,11 @@ class MBusDataVariable {
   // uint8_t mdh;
   // std::vector<uint8_t> mfg_data;
 
+  /// @brief Dump variable data to log for debugging
   void dump() const;
 };
 
+/// @brief Parsed M-Bus value with metadata
 class MBusValue {
  public:
   uint8_t id{0};

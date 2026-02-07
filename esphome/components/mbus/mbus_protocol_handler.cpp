@@ -1,6 +1,7 @@
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
 
+#include "mbus_frame.h"
 #include "mbus_frame_factory.h"
 #include "mbus_frame_meta.h"
 #include "mbus_protocol_handler.h"
@@ -335,16 +336,14 @@ std::unique_ptr<MBusDataVariable> MBusProtocolHandler::parse_variable_data_respo
 
     record.drh.dib.dif = *it;
     // Extension Bit of DIF / DIFE Frame set => next Frame is DIFE
-    // Reserve space for typical DIFE count (usually 0-2 extensions)
-    record.drh.dib.dife.reserve(2);
     uint8_t dife_count = 0;
-    while (it < data.end() && (*it & MBusDataDifMask::EXTENSION_BIT) && dife_count < 10) {
+    while (it < data.end() && (*it & MBusDataDifMask::EXTENSION_BIT) && dife_count < MBUS_MAX_DIFE_COUNT) {
       it++;
       record.drh.dib.dife.push_back(*it);
       dife_count++;
     }
-    if (dife_count >= 10) {
-      ESP_LOGW(TAG, "Too many DIFE extensions (>10), possible malformed frame");
+    if (dife_count >= MBUS_MAX_DIFE_COUNT) {
+      ESP_LOGW(TAG, "Too many DIFE extensions (>%d), possible malformed frame", MBUS_MAX_DIFE_COUNT);
     }
     it++;
 
@@ -352,16 +351,14 @@ std::unique_ptr<MBusDataVariable> MBusProtocolHandler::parse_variable_data_respo
     record.drh.vib.vif = *it;
 
     // Extension Bit of VIF / VIFE Frame set => next Frame is VIFE
-    // Reserve space for typical VIFE count (usually 0-2 extensions)
-    record.drh.vib.vife.reserve(2);
     uint8_t vife_count = 0;
-    while (it < data.end() && (*it & MBusDataVifMask::EXTENSION_BIT) && vife_count < 10) {
+    while (it < data.end() && (*it & MBusDataVifMask::EXTENSION_BIT) && vife_count < MBUS_MAX_VIFE_COUNT) {
       it++;
       record.drh.vib.vife.push_back(*it);
       vife_count++;
     }
-    if (vife_count >= 10) {
-      ESP_LOGW(TAG, "Too many VIFE extensions (>10), possible malformed frame");
+    if (vife_count >= MBUS_MAX_VIFE_COUNT) {
+      ESP_LOGW(TAG, "Too many VIFE extensions (>%d), possible malformed frame", MBUS_MAX_VIFE_COUNT);
     }
     it++;
 

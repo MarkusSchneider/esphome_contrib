@@ -4,6 +4,7 @@
 namespace esphome {
 namespace mbus {
 
+/// @brief M-Bus special addresses
 class MBusAddresses {
  public:
   static const uint8_t NETWORK_LAYER = 0xFD;
@@ -11,6 +12,7 @@ class MBusAddresses {
   static const uint8_t BROADCAST = 0xFF;
 };
 
+/// @brief M-Bus control codes for different command types
 class MBusControlCodes {
  public:
   static const uint8_t SND_NKE = 0x40;
@@ -21,20 +23,23 @@ class MBusControlCodes {
   static const uint8_t RSP_UD = 0x08;
 };
 
+/// @brief M-Bus control information codes
 class MBusControlInformationCodes {
  public:
   static const uint8_t SELECTION_OF_DEVICES_MODE1 = 0x52;
   static const uint8_t VARIABLE_DATA_RESPONSE_MODE1 = 0x72;
 };
+
+/// @brief Metadata for different M-Bus frame types
 class MBusFrameMeta {
  public:
   const uint8_t start_bit{0};
   const uint8_t stop_bit{0};
-  const uint8_t lenght{0};
+  const uint8_t length{0};
   const uint8_t base_frame_size{0};
 
   MBusFrameMeta(uint8_t start_bit, uint8_t stop_bit, uint8_t length, uint8_t base_frame_size)
-      : start_bit(start_bit), stop_bit(stop_bit), lenght(length), base_frame_size(base_frame_size) {}
+      : start_bit(start_bit), stop_bit(stop_bit), length(length), base_frame_size(base_frame_size) {}
 };
 
 class MBusFrameDefinition {
