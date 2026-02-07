@@ -49,7 +49,6 @@ MBusFrame::MBusFrame(MBusFrame &frame) {
   this->stop = frame.stop;
   this->length = frame.length;
 
-  this->data.reserve(frame.data.size());
   this->data.insert(this->data.begin(), frame.data.begin(), frame.data.end());
 }
 
@@ -282,8 +281,7 @@ void MBusDataVariable::dump() const {
              "Type: %s, %f)",
              record.drh.dib.dif, format_hex_pretty(record.drh.dib.dife).c_str(), record.drh.vib.vif,
              format_hex_pretty(record.drh.vib.vife).c_str(), format_hex_pretty(record.data).c_str(), mbus_data->id,
-             mbus_data->function.c_str(), mbus_data->unit.c_str(), mbus_data->tariff,
-             mbus_data->get_data_type_str().c_str(), mbus_data->value);
+             mbus_data->function, mbus_data->unit, mbus_data->tariff, mbus_data->get_data_type_str(), mbus_data->value);
   }
 }
 
@@ -320,7 +318,7 @@ uint32_t MBusDataRecord::parse_tariff_(const MBusDataRecord *record) {
   return -1;
 }
 
-std::string MBusDataRecord::parse_function_(const MBusDataRecord *record) {
+const char *MBusDataRecord::parse_function_(const MBusDataRecord *record) {
   if (record) {
     switch (record->drh.dib.dif & MBusDataDifMask::FUNCTION) {
       case 0x00:
@@ -334,7 +332,6 @@ std::string MBusDataRecord::parse_function_(const MBusDataRecord *record) {
 
       case 0x30:
         return "Value during error state";
-        break;
 
       default:
         return "unknown";
@@ -344,7 +341,11 @@ std::string MBusDataRecord::parse_function_(const MBusDataRecord *record) {
   return "record is null";
 }
 
-std::string MBusDataRecord::parse_unit_(const MBusDataRecord *record) {
+const char *MBusDataRecord::parse_unit_(const MBusDataRecord *record) {
+  // Static buffer for dynamic unit strings - shared across all calls
+  // This is acceptable as the string is copied into MBusValue before the next call
+  static char unit_buffer[64];
+
   const auto *vib = &(record->drh.vib);
   auto unit_and_multiplier = vib->vif & MBusDataVifMask::UNIT_AND_MULTIPLIER;
 
@@ -358,68 +359,76 @@ std::string MBusDataRecord::parse_unit_(const MBusDataRecord *record) {
 
     switch (unit) {
       case 0b0000:
-        return str_sprintf("Energy (10^%d Wh)", exponent - 3);
+        snprintf(unit_buffer, sizeof(unit_buffer), "Energy (10^%d Wh)", exponent - 3);
+        return unit_buffer;
       case 0b0001:
-        return str_sprintf("Energy (10^%d J)", exponent);
+        snprintf(unit_buffer, sizeof(unit_buffer), "Energy (10^%d J)", exponent);
+        return unit_buffer;
       case 0b0010:
-        return str_sprintf("Volume (10^%d m^3)", exponent - 6);
+        snprintf(unit_buffer, sizeof(unit_buffer), "Volume (10^%d m^3)", exponent - 6);
+        return unit_buffer;
       case 0b0011:
-        return str_sprintf("Mass (10^%d kg)", exponent - 3);
+        snprintf(unit_buffer, sizeof(unit_buffer), "Mass (10^%d kg)", exponent - 3);
+        return unit_buffer;
       case 0b0100: {
         auto data_time_unit = parse_date_time_unit_(exponent);
         if ((exponent & 0b100) == 0) {
-          return str_sprintf("Time (%s)", data_time_unit.c_str());
+          snprintf(unit_buffer, sizeof(unit_buffer), "Time (%s)", data_time_unit);
+        } else {
+          snprintf(unit_buffer, sizeof(unit_buffer), "Operating Time (%s)", data_time_unit);
         }
-        return str_sprintf("Operating Time (%s)", data_time_unit.c_str());
+        return unit_buffer;
       }
       case 0b0101:
-        return str_sprintf("Power (10^%d W)", exponent - 3);
+        snprintf(unit_buffer, sizeof(unit_buffer), "Power (10^%d W)", exponent - 3);
+        return unit_buffer;
       case 0b0110:
-        return str_sprintf("Power (10^%d J/h)", exponent);
+        snprintf(unit_buffer, sizeof(unit_buffer), "Power (10^%d J/h)", exponent);
+        return unit_buffer;
       case 0b0111:
-        return str_sprintf("Volume Flow (10^%d m^3/h)", exponent - 6);
+        snprintf(unit_buffer, sizeof(unit_buffer), "Volume Flow (10^%d m^3/h)", exponent - 6);
+        return unit_buffer;
       case 0b1000:
-        return str_sprintf("Volume Flow ext. (10^%d m^3/min)", exponent - 7);
+        snprintf(unit_buffer, sizeof(unit_buffer), "Volume Flow ext. (10^%d m^3/min)", exponent - 7);
+        return unit_buffer;
       case 0b1001:
-        return str_sprintf("Volume Flow ext (10^%d m^3/sec)", exponent - 9);
+        snprintf(unit_buffer, sizeof(unit_buffer), "Volume Flow ext (10^%d m^3/sec)", exponent - 9);
+        return unit_buffer;
       case 0b1010:
-        return str_sprintf("Mass Flow (10^%d kg/h)", exponent - 3);
+        snprintf(unit_buffer, sizeof(unit_buffer), "Mass Flow (10^%d kg/h)", exponent - 3);
+        return unit_buffer;
       case 0b1011: {
-        switch (exponent & 0b100) {
-          case 0b000:
-            return str_sprintf("Flow Temperatur (10^%d °C)", exponent - 3);
-          case 0b100:
-            return str_sprintf("Return Temperatur (10^%d °C)", exponent - 3);
+        if ((exponent & 0b100) == 0b000) {
+          snprintf(unit_buffer, sizeof(unit_buffer), "Flow Temperatur (10^%d °C)", exponent - 3);
+        } else {
+          snprintf(unit_buffer, sizeof(unit_buffer), "Return Temperatur (10^%d °C)", exponent - 3);
         }
+        return unit_buffer;
       }
       case 0b1100: {
-        switch (exponent & 0b100) {
-          case 0b000:
-            return str_sprintf("Temperatur Difference (10^%d K)", exponent - 3);
-          case 0b100:
-            return str_sprintf("External Temperatur (10^%d °C)", exponent - 3);
+        if ((exponent & 0b100) == 0b000) {
+          snprintf(unit_buffer, sizeof(unit_buffer), "Temperatur Difference (10^%d K)", exponent - 3);
+        } else {
+          snprintf(unit_buffer, sizeof(unit_buffer), "External Temperatur (10^%d °C)", exponent - 3);
         }
+        return unit_buffer;
       }
       case 0b1101: {
-        switch (exponent & 0b100) {
-          case 0b000:
-            return str_sprintf("Pressure (10^%d bar)", exponent - 3);
-          case 0b100:
-            return str_sprintf("Time Point (%s)", (exponent & 0b000) == 0 ? "Date" : "Date & Time");
-          case 0b110:
-            return "Units for H.C.A.";
-          case 0b111:
-            return "Reserved";
+        if ((exponent & 0b100) == 0b000) {
+          snprintf(unit_buffer, sizeof(unit_buffer), "Pressure (10^%d bar)", exponent - 3);
+          return unit_buffer;
         }
+        snprintf(unit_buffer, sizeof(unit_buffer), "Time Point (%s)", (exponent & 0b000) == 0 ? "Date" : "Date & Time");
+        return unit_buffer;
       }
       case 0b1110: {
         auto data_time_unit = parse_date_time_unit_(exponent);
-        switch (exponent & 0b100) {
-          case 0b000:
-            return str_sprintf("Averaging Duration (%s)", data_time_unit.c_str());
-          case 0b100:
-            return str_sprintf("Actuality Duration (%s)", data_time_unit.c_str());
+        if ((exponent & 0b100) == 0b000) {
+          snprintf(unit_buffer, sizeof(unit_buffer), "Averaging Duration (%s)", data_time_unit);
+        } else {
+          snprintf(unit_buffer, sizeof(unit_buffer), "Actuality Duration (%s)", data_time_unit);
         }
+        return unit_buffer;
       }
       case 0b1111:
         ESP_LOGV(TAG, "Unsupported unit.");
@@ -443,7 +452,7 @@ std::string MBusDataRecord::parse_unit_(const MBusDataRecord *record) {
   return "";
 }
 
-std::string MBusDataRecord::parse_date_time_unit_(const uint8_t exponent) {
+const char *MBusDataRecord::parse_date_time_unit_(const uint8_t exponent) {
   switch (exponent) {
     case 0b00:
       return "seconds";

@@ -130,9 +130,9 @@ class MBusDataRecord {
 
  protected:
   uint32_t parse_tariff_(const MBusDataRecord *record);
-  std::string parse_function_(const MBusDataRecord *record);
-  std::string parse_unit_(const MBusDataRecord *record);
-  std::string parse_date_time_unit_(uint8_t exponent);
+  const char *parse_function_(const MBusDataRecord *record);
+  const char *parse_unit_(const MBusDataRecord *record);
+  const char *parse_date_time_unit_(uint8_t exponent);
   MBusDataType parse_data_type_(const MBusDataRecord *record);
   float parse_value_(const MBusDataRecord *record, const MBusDataType &data_type);
 };
@@ -166,13 +166,13 @@ class MBusDataVariable {
 class MBusValue {
  public:
   uint8_t id{0};
-  std::string function{""};
-  std::string unit{""};
+  const char *function{""};
+  const char *unit{""};
   float value{0.0};
   uint8_t tariff{0};
   MBusDataType data_type{MBusDataType::NO_DATA};
 
-  std::string get_data_type_str() const {
+  const char *get_data_type_str() const {
     switch (this->data_type) {
       case MBusDataType::NO_DATA:
         return "NO_DATA";

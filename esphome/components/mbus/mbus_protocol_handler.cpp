@@ -98,18 +98,23 @@ void MBusProtocolHandler::loop() {
 }
 
 void MBusProtocolHandler::delete_first_command_() {
-  // auto *command = this->commands_.front();
-  // delete command;
-
-  this->commands_.pop_front();
+  // Remove the first command
+  if (!this->commands_.empty()) {
+    this->commands_.erase(this->commands_.begin());
+  }
 
   this->waiting_for_response_ = false;
   this->timestamp_ = 0;
+
+  // Clear and release memory
   this->rx_buffer_.clear();
+  this->rx_buffer_.shrink_to_fit();
 }
 
 int8_t MBusProtocolHandler::send_(MBusFrame &frame) {
+  // Clear and release memory from previous receive
   this->rx_buffer_.clear();
+  this->rx_buffer_.shrink_to_fit();
 
   uint8_t payload_size = 0;
   switch (frame.frame_type) {
@@ -137,8 +142,7 @@ int8_t MBusProtocolHandler::send_(MBusFrame &frame) {
   this->network_adapter_->send(payload);
   this->timestamp_ = millis();
 
-  payload.clear();
-
+  // payload will be automatically destroyed when going out of scope
   return 0;
 }
 
@@ -301,6 +305,9 @@ std::unique_ptr<MBusDataVariable> MBusProtocolHandler::parse_variable_data_respo
   // --------------------------------------------------------------
 
   auto it = data.begin() + 12;
+  // Reserve space to avoid reallocations during parsing
+  response->records.reserve(16);  // Typical M-Bus frames have <16 records
+
   while (it < data.end()) {
     if ((*it & 0xFF) == MBusDataDifMask::IDLE_FILLER) {
       it++;
@@ -328,9 +335,16 @@ std::unique_ptr<MBusDataVariable> MBusProtocolHandler::parse_variable_data_respo
 
     record.drh.dib.dif = *it;
     // Extension Bit of DIF / DIFE Frame set => next Frame is DIFE
-    while (it < data.end() && (*it & MBusDataDifMask::EXTENSION_BIT)) {
+    // Reserve space for typical DIFE count (usually 0-2 extensions)
+    record.drh.dib.dife.reserve(2);
+    uint8_t dife_count = 0;
+    while (it < data.end() && (*it & MBusDataDifMask::EXTENSION_BIT) && dife_count < 10) {
       it++;
       record.drh.dib.dife.push_back(*it);
+      dife_count++;
+    }
+    if (dife_count >= 10) {
+      ESP_LOGW(TAG, "Too many DIFE extensions (>10), possible malformed frame");
     }
     it++;
 
@@ -338,9 +352,16 @@ std::unique_ptr<MBusDataVariable> MBusProtocolHandler::parse_variable_data_respo
     record.drh.vib.vif = *it;
 
     // Extension Bit of VIF / VIFE Frame set => next Frame is VIFE
-    while (it < data.end() && (*it & MBusDataVifMask::EXTENSION_BIT)) {
+    // Reserve space for typical VIFE count (usually 0-2 extensions)
+    record.drh.vib.vife.reserve(2);
+    uint8_t vife_count = 0;
+    while (it < data.end() && (*it & MBusDataVifMask::EXTENSION_BIT) && vife_count < 10) {
       it++;
       record.drh.vib.vife.push_back(*it);
+      vife_count++;
+    }
+    if (vife_count >= 10) {
+      ESP_LOGW(TAG, "Too many VIFE extensions (>10), possible malformed frame");
     }
     it++;
 
@@ -350,6 +371,9 @@ std::unique_ptr<MBusDataVariable> MBusProtocolHandler::parse_variable_data_respo
 
     response->records.push_back(record);
   }
+
+  // Release any excess capacity allocated during parsing
+  response->records.shrink_to_fit();
 
   return response;
 }

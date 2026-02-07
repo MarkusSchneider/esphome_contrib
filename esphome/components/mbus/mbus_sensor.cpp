@@ -1,9 +1,9 @@
 #include "mbus_sensor.h"
 
 namespace esphome {
-namespace mbus_sensor {
+namespace mbus {
 
-void MBusSensor::publish(const std::unique_ptr<mbus::MBusValue> &value) {
+void MBusSensor::publish(const std::unique_ptr<MBusValue> &value) {
   // float result = payload_to_float(data, *this);
 
   // // Is there a lambda registered
@@ -26,5 +26,5 @@ void MBusSensor::publish(const std::unique_ptr<mbus::MBusValue> &value) {
   this->publish_state(float_value);
 }
 
-}  // namespace mbus_sensor
+}  // namespace mbus
 }  // namespace esphome
