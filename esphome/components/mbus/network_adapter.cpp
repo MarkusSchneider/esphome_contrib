@@ -13,50 +13,51 @@ int8_t SerialAdapter::send(std::vector<uint8_t> &payload) {
 }
 
 int8_t SerialAdapter::receive(std::vector<uint8_t> &payload) {
-  if (this->uart_->available() <= 0) {
-    return -1;
-  }
-
+  // Append all available UART bytes to the accumulation buffer
   uint8_t byte = 0;
   while (this->uart_->available()) {
     this->uart_->read_byte(&byte);
     payload.push_back(byte);
-    ESP_LOGV(TAG, "  <- 0x%X", byte);
-
-    if (byte == MBusFrameDefinition::ACK_FRAME.start_bit) {
-      // ACK_FRAME recevied
-      return 1;
-    }
-
-    if (byte == MBusFrameDefinition::SHORT_FRAME.start_bit) {
-      // start of short frame
-      return 0;
-    }
-    if (byte == MBusFrameDefinition::SHORT_FRAME.stop_bit) {
-      // end of short frame
-      return 1;
-    }
-
-    if (byte == MBusFrameDefinition::CONTROL_FRAME.start_bit) {
-      // start of control frame
-      return 0;
-    }
-    if (byte == MBusFrameDefinition::CONTROL_FRAME.stop_bit) {
-      // end of control frame
-      return 1;
-    }
-
-    if (byte == MBusFrameDefinition::LONG_FRAME.start_bit) {
-      // start of control frame
-      return 0;
-    }
-    if (byte == MBusFrameDefinition::LONG_FRAME.stop_bit) {
-      // end of control frame
-      return 1;
-    }
+    ESP_LOGV(TAG, "  <- 0x%02X", byte);
   }
 
-  return 0;
+  if (payload.empty()) {
+    return -1;  // no data at all
+  }
+
+  // ACK frame: single byte 0xE5
+  if (payload[0] == MBusFrameDefinition::ACK_FRAME.start_bit) {
+    return 1;  // complete
+  }
+
+  // Short frame: start byte 0x10, exactly 5 bytes total
+  if (payload[0] == MBusFrameDefinition::SHORT_FRAME.start_bit) {
+    return (payload.size() >= MBusFrameDefinition::SHORT_FRAME.base_frame_size) ? 1 : 0;
+  }
+
+  // Long or Control frame: start byte 0x68
+  // Frame structure: start(1) + L(1) + L(1) + start(1) + [C+A+CI+data](L) + checksum(1) + stop(1)
+  // Total expected bytes = L + 6
+  if (payload[0] == MBusFrameDefinition::LONG_FRAME.start_bit) {
+    if (payload.size() < 2) {
+      return 0;  // need at least 2 bytes to read the L field
+    }
+    const uint8_t l_field = payload[1];
+    const size_t expected_size = static_cast<size_t>(l_field) + 6;
+    return (payload.size() >= expected_size) ? 1 : 0;
+  }
+
+  // Unknown start byte — discard and signal error
+  ESP_LOGW(TAG, "receive(): unknown start byte 0x%02X, discarding %zu bytes", payload[0], payload.size());
+  payload.clear();
+  return -1;
+}
+
+void SerialAdapter::flush_rx() {
+  uint8_t byte = 0;
+  while (this->uart_->available()) {
+    this->uart_->read_byte(&byte);
+  }
 }
 
 }  // namespace mbus

@@ -113,9 +113,11 @@ void MBusProtocolHandler::delete_first_command_() {
 }
 
 int8_t MBusProtocolHandler::send_(MBusFrame &frame) {
-  // Clear and release memory from previous receive
+  // Clear software receive buffer and drain any leftover bytes from the UART hardware FIFO.
+  // Without this, stale bytes from a previous truncated frame would corrupt the next response.
   this->rx_buffer_.clear();
   this->rx_buffer_.shrink_to_fit();
+  this->network_adapter_->flush_rx();
 
   uint8_t payload_size = 0;
   switch (frame.frame_type) {
@@ -139,7 +141,8 @@ int8_t MBusProtocolHandler::send_(MBusFrame &frame) {
   std::vector<uint8_t> payload(payload_size, 0);
   MBusFrame::serialize(frame, payload);
 
-  ESP_LOGV(TAG, "Send mbus data: %s", format_hex_pretty(payload).c_str());
+  char hex_buf_send[format_hex_pretty_size(MBUS_FRAME_DATA_LENGTH + 9)];
+  ESP_LOGV(TAG, "Send mbus data: %s", format_hex_pretty_to(hex_buf_send, payload));
   this->network_adapter_->send(payload);
   this->timestamp_ = millis();
 
@@ -162,7 +165,8 @@ int8_t MBusProtocolHandler::receive_() {
 
   if (rx_status == 1) {
     // End of Frame received.
-    ESP_LOGV(TAG, "Received mbus data: %s", format_hex_pretty(this->rx_buffer_).c_str());
+    char hex_buf_recv[format_hex_pretty_size(MBUS_FRAME_DATA_LENGTH + 9)];
+    ESP_LOGV(TAG, "Received mbus data: %s", format_hex_pretty_to(hex_buf_recv, this->rx_buffer_));
     return 1;
   }
 
@@ -174,7 +178,7 @@ std::unique_ptr<MBusFrame> MBusProtocolHandler::parse_response_() {
     return MBusFrameFactory::create_empty_frame();
   }
 
-  //     Single Character
+  //     Single Character (ACK)
   //    ------------------
   // 0  |      E5h       |
   //    ------------------
@@ -196,7 +200,15 @@ std::unique_ptr<MBusFrame> MBusProtocolHandler::parse_response_() {
   //   ------------------
   if (this->rx_buffer_.at(0) == MBusFrameDefinition::SHORT_FRAME.start_bit &&
       this->rx_buffer_.size() == MBusFrameDefinition::SHORT_FRAME.base_frame_size) {
-    return MBusFrameFactory::create_short_frame(this->rx_buffer_.at(1), this->rx_buffer_.at(2), this->rx_buffer_.at(3));
+    auto frame =
+        MBusFrameFactory::create_short_frame(this->rx_buffer_.at(1), this->rx_buffer_.at(2), this->rx_buffer_.at(3));
+    const uint8_t expected_checksum = MBusFrame::calc_checksum(*frame);
+    if (frame->checksum != expected_checksum) {
+      ESP_LOGE(TAG, "parse_response_(): Short frame checksum mismatch: got 0x%02X expected 0x%02X", frame->checksum,
+               expected_checksum);
+      return MBusFrameFactory::create_empty_frame();
+    }
+    return frame;
   }
 
   //     Control Frame
@@ -221,8 +233,15 @@ std::unique_ptr<MBusFrame> MBusProtocolHandler::parse_response_() {
   //   ------------------
   if (this->rx_buffer_.at(0) == MBusFrameDefinition::CONTROL_FRAME.start_bit &&
       this->rx_buffer_.size() == MBusFrameDefinition::CONTROL_FRAME.base_frame_size) {
-    return MBusFrameFactory::create_control_frame(this->rx_buffer_.at(4), this->rx_buffer_.at(5),
-                                                  this->rx_buffer_.at(6), this->rx_buffer_.at(7));
+    auto frame = MBusFrameFactory::create_control_frame(this->rx_buffer_.at(4), this->rx_buffer_.at(5),
+                                                        this->rx_buffer_.at(6), this->rx_buffer_.at(7));
+    const uint8_t expected_checksum = MBusFrame::calc_checksum(*frame);
+    if (frame->checksum != expected_checksum) {
+      ESP_LOGE(TAG, "parse_response_(): Control frame checksum mismatch: got 0x%02X expected 0x%02X", frame->checksum,
+               expected_checksum);
+      return MBusFrameFactory::create_empty_frame();
+    }
+    return frame;
   }
 
   //     Long Frame
@@ -249,10 +268,37 @@ std::unique_ptr<MBusFrame> MBusProtocolHandler::parse_response_() {
   // ..|    Stop 16h    |
   //   ------------------
   if (this->rx_buffer_.at(0) == MBusFrameDefinition::LONG_FRAME.start_bit) {
+    // Minimum size: start(1) + L(1) + L(1) + start(1) + C(1) + A(1) + CI(1) + checksum(1) + stop(1) = 9 bytes
+    if (this->rx_buffer_.size() < MBusFrameDefinition::LONG_FRAME.base_frame_size) {
+      ESP_LOGE(TAG, "parse_response_(): Long frame too short: %zu bytes", this->rx_buffer_.size());
+      return MBusFrameFactory::create_empty_frame();
+    }
+
+    const uint8_t l_field = this->rx_buffer_.at(1);
+    const size_t expected_size = static_cast<size_t>(l_field) + 6;
+
+    // Validate repeated L field, repeated start byte, total size and stop byte
+    if (this->rx_buffer_.at(2) != l_field || this->rx_buffer_.at(3) != MBusFrameDefinition::LONG_FRAME.start_bit ||
+        this->rx_buffer_.size() != expected_size ||
+        this->rx_buffer_.back() != MBusFrameDefinition::LONG_FRAME.stop_bit) {
+      ESP_LOGE(TAG, "parse_response_(): Long frame structure invalid: size=%zu expected=%zu L=0x%02X",
+               this->rx_buffer_.size(), expected_size, l_field);
+      return MBusFrameFactory::create_empty_frame();
+    }
+
     std::vector<uint8_t> data(this->rx_buffer_.begin() + 7, this->rx_buffer_.end() - 2);
     auto frame =
         MBusFrameFactory::create_long_frame(this->rx_buffer_.at(4), this->rx_buffer_.at(5), this->rx_buffer_.at(6),
                                             data, this->rx_buffer_.at(this->rx_buffer_.size() - 2));
+
+    // Validate checksum over C + A + CI + user data
+    const uint8_t expected_checksum = MBusFrame::calc_checksum(*frame);
+    if (frame->checksum != expected_checksum) {
+      ESP_LOGE(TAG, "parse_response_(): Long frame checksum mismatch: got 0x%02X expected 0x%02X", frame->checksum,
+               expected_checksum);
+      return MBusFrameFactory::create_empty_frame();
+    }
+
     if (frame->control_information == MBusControlInformationCodes::VARIABLE_DATA_RESPONSE_MODE1) {
       frame->variable_data = parse_variable_data_response_(frame->data);
     }
@@ -260,7 +306,8 @@ std::unique_ptr<MBusFrame> MBusProtocolHandler::parse_response_() {
     return frame;
   }
 
-  ESP_LOGE(TAG, "parse_response_(): ERROR 'invalid frame' %s", format_hex_pretty(this->rx_buffer_).c_str());
+  char hex_buf_err[format_hex_pretty_size(MBUS_FRAME_DATA_LENGTH + 9)];
+  ESP_LOGE(TAG, "parse_response_(): ERROR 'invalid frame' %s", format_hex_pretty_to(hex_buf_err, this->rx_buffer_));
   return MBusFrameFactory::create_empty_frame();
 }
 
@@ -325,6 +372,7 @@ std::unique_ptr<MBusDataVariable> MBusProtocolHandler::parse_variable_data_respo
     }
 
     MBusDataRecord record;
+    bool truncated = false;
 
     // DIF
     //    Bit 7         6         5          4       3     2      1     0
@@ -338,14 +386,26 @@ std::unique_ptr<MBusDataVariable> MBusProtocolHandler::parse_variable_data_respo
     // Extension Bit of DIF / DIFE Frame set => next Frame is DIFE
     uint8_t dife_count = 0;
     while (it < data.end() && (*it & MBusDataDifMask::EXTENSION_BIT) && dife_count < MBUS_MAX_DIFE_COUNT) {
-      it++;
+      ++it;
+      if (it >= data.end()) {
+        ESP_LOGW(TAG, "Truncated frame: expected DIFE byte %d but frame ended", dife_count + 1);
+        truncated = true;
+        break;
+      }
       record.drh.dib.dife.push_back(*it);
       dife_count++;
+    }
+    if (truncated) {
+      break;
     }
     if (dife_count >= MBUS_MAX_DIFE_COUNT) {
       ESP_LOGW(TAG, "Too many DIFE extensions (>%d), possible malformed frame", MBUS_MAX_DIFE_COUNT);
     }
-    it++;
+    ++it;
+    if (it >= data.end()) {
+      ESP_LOGW(TAG, "Truncated frame: expected VIF byte but frame ended");
+      break;
+    }
 
     // VIB
     record.drh.vib.vif = *it;
@@ -353,18 +413,35 @@ std::unique_ptr<MBusDataVariable> MBusProtocolHandler::parse_variable_data_respo
     // Extension Bit of VIF / VIFE Frame set => next Frame is VIFE
     uint8_t vife_count = 0;
     while (it < data.end() && (*it & MBusDataVifMask::EXTENSION_BIT) && vife_count < MBUS_MAX_VIFE_COUNT) {
-      it++;
+      ++it;
+      if (it >= data.end()) {
+        ESP_LOGW(TAG, "Truncated frame: expected VIFE byte %d but frame ended", vife_count + 1);
+        truncated = true;
+        break;
+      }
       record.drh.vib.vife.push_back(*it);
       vife_count++;
+    }
+    if (truncated) {
+      break;
     }
     if (vife_count >= MBUS_MAX_VIFE_COUNT) {
       ESP_LOGW(TAG, "Too many VIFE extensions (>%d), possible malformed frame", MBUS_MAX_VIFE_COUNT);
     }
-    it++;
+    ++it;
 
     auto data_len = get_dif_datalength_(record.drh.dib.dif, it);
+    if (data_len < 0) {
+      ESP_LOGW(TAG, "Invalid record data length %d, stopping record parse", data_len);
+      break;
+    }
+    const auto remaining = static_cast<size_t>(data.end() - it);
+    if (static_cast<size_t>(data_len) > remaining) {
+      ESP_LOGW(TAG, "Truncated frame: record needs %d bytes, only %zu remaining", data_len, remaining);
+      break;
+    }
     record.data.insert(record.data.begin(), it, it + data_len);
-    it = it + data_len;
+    it += data_len;
 
     response->records.push_back(record);
   }
@@ -389,7 +466,7 @@ int8_t MBusProtocolHandler::get_dif_datalength_(uint8_t dif, std::vector<uint8_t
     case 0x4:
       return 4;
     case 0x5:
-      return 5;
+      return 4;  // 32-bit IEEE 754 real = 4 bytes (EN 13757-3 Table 5)
     case 0x6:
       return 6;
     case 0x7:
@@ -433,8 +510,8 @@ int8_t MBusProtocolHandler::get_dif_datalength_(uint8_t dif, std::vector<uint8_t
     case 0xE:
       return 6;
     case 0xF:
-      return 8;
-    default:  // never reached
+      return 0;  // Special functions = 0 data bytes (EN 13757-3 Table 5)
+    default:     // never reached
       ESP_LOGE(TAG, "Invalid value for diff data length = %d", dif & DIF_DATA_LENGTH_MASK);
       return 0x0;
   }

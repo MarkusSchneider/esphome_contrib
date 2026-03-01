@@ -2,6 +2,8 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
+#include <cstring>
+
 #include "mbus_decoder.h"
 #include "mbus_frame.h"
 #include "mbus_frame_meta.h"
@@ -243,7 +245,8 @@ void MBusFrame::dump_frame() const {
       ESP_LOGV(TAG, "\tcontrol = 0x%.2X", this->control);
       ESP_LOGV(TAG, "\taddress = 0x%.2X", this->address);
       ESP_LOGV(TAG, "\tcontrol information = 0x%.2X", this->control_information);
-      ESP_LOGV(TAG, "\tdata = %s", format_hex_pretty(this->data).c_str());
+      char hex_buf_data[format_hex_pretty_size(MBUS_FRAME_DATA_LENGTH)];
+      ESP_LOGV(TAG, "\tdata = %s", format_hex_pretty_to(hex_buf_data, this->data));
       ESP_LOGV(TAG, "\tstop = 0x%.2X", this->stop);
       if (this->variable_data) {
         this->variable_data->dump();
@@ -260,7 +263,8 @@ void MBusDataVariable::dump() const {
 
   const auto *header = &this->header;
   auto id = MBusDecoder::decode_bcd_uint32(header->id);
-  ESP_LOGD(TAG, "\t  id = %s (0x%.8X)", format_hex_pretty(header->id, 4).c_str(), id);
+  char id_buf[format_hex_pretty_size(4)];
+  ESP_LOGD(TAG, "\t  id = %s (0x%.8X)", format_hex_pretty_to(id_buf, header->id, 4), id);
 
   auto manufacturer = MBusDecoder::decode_manufacturer(header->manufacturer);
   ESP_LOGD(TAG, "\t  manufacturer = %s", manufacturer.c_str());
@@ -269,21 +273,24 @@ void MBusDataVariable::dump() const {
   ESP_LOGD(TAG, "\t  medium = %s", medium.c_str());
   ESP_LOGD(TAG, "\t  access no = 0x%.2X", header->access_no);
   ESP_LOGD(TAG, "\t  status = 0x%.2X", header->status);
-  ESP_LOGD(TAG, "\t  signature = %s", format_hex_pretty(header->signature, 2).c_str());
+  char sig_buf[format_hex_pretty_size(2)];
+  ESP_LOGD(TAG, "\t  signature = %s", format_hex_pretty_to(sig_buf, header->signature, 2));
   ESP_LOGD(TAG, "\t Records:");
 
   const auto *records = &this->records;
   for (auto i = 0; i < records->size(); i++) {
     auto record = records->at(i);
     auto mbus_data = record.parse(i);
-    // Convert StaticVector to std::vector for format_hex_pretty()
-    std::vector<uint8_t> dife_vec(record.drh.dib.dife.begin(), record.drh.dib.dife.end());
-    std::vector<uint8_t> vife_vec(record.drh.vib.vife.begin(), record.drh.vib.vife.end());
+    char dife_buf[format_hex_pretty_size(MBUS_MAX_DIFE_COUNT)];
+    char vife_buf[format_hex_pretty_size(MBUS_MAX_VIFE_COUNT)];
+    char rec_data_buf[format_hex_pretty_size(MBUS_FRAME_DATA_LENGTH)];
+    format_hex_pretty_to(dife_buf, record.drh.dib.dife.data(), record.drh.dib.dife.size());
+    format_hex_pretty_to(vife_buf, record.drh.vib.vife.data(), record.drh.vib.vife.size());
+    format_hex_pretty_to(rec_data_buf, record.data);
     ESP_LOGD(TAG,
              "\t  DIF: 0x%.2X DIFE: %s VIF: 0x%.2X VIFE: %s Data: %s. (ID: %d, Function: %s, Unit: %s, Tariff: %d, "
              "Type: %s, %f)",
-             record.drh.dib.dif, format_hex_pretty(dife_vec).c_str(), record.drh.vib.vif,
-             format_hex_pretty(vife_vec).c_str(), format_hex_pretty(record.data).c_str(), mbus_data->id,
+             record.drh.dib.dif, dife_buf, record.drh.vib.vif, vife_buf, rec_data_buf, mbus_data->id,
              mbus_data->function, mbus_data->unit, mbus_data->tariff, mbus_data->get_data_type_str(), mbus_data->value);
   }
 }
@@ -353,7 +360,7 @@ const char *MBusDataRecord::parse_unit_(const MBusDataRecord *record) {
   auto unit_and_multiplier = vib->vif & MBusDataVifMask::UNIT_AND_MULTIPLIER;
 
   // Primary VIF
-  if (unit_and_multiplier >= 0 & unit_and_multiplier <= 0x7B) {
+  if (unit_and_multiplier >= 0 && unit_and_multiplier <= 0x7B) {
     auto unit_mask = 0b01111000;
     auto multiplier_mask = 0b00000111;
 
@@ -421,7 +428,7 @@ const char *MBusDataRecord::parse_unit_(const MBusDataRecord *record) {
           snprintf(unit_buffer, sizeof(unit_buffer), "Pressure (10^%d bar)", exponent - 3);
           return unit_buffer;
         }
-        snprintf(unit_buffer, sizeof(unit_buffer), "Time Point (%s)", (exponent & 0b000) == 0 ? "Date" : "Date & Time");
+        snprintf(unit_buffer, sizeof(unit_buffer), "Time Point (%s)", (exponent & 0b001) == 0 ? "Date" : "Date & Time");
         return unit_buffer;
       }
       case 0b1110: {
@@ -481,8 +488,8 @@ MBusDataType MBusDataRecord::parse_data_type_(const MBusDataRecord *record) {
     case 0x01:
       return MBusDataType::INT8;
     case 0x02: {
-      // E110 1100  Time Point (date)
-      if (unit_and_multiplier & 0b01101100) {
+      // VIF 0x6C = Time Point (date only)
+      if (unit_and_multiplier == 0x6C) {
         return MBusDataType::DATE_16;
       }
       return MBusDataType::INT16;
@@ -490,8 +497,8 @@ MBusDataType MBusDataRecord::parse_data_type_(const MBusDataRecord *record) {
     case 0x03:
       return MBusDataType::INT24;
     case 0x04: {
-      // E110 1101  Time Point (date/time)
-      if (unit_and_multiplier & 0b01101101) {
+      // VIF 0x6D = Time Point (date and time)
+      if (unit_and_multiplier == 0x6D) {
         return MBusDataType::DATE_TIME_32;
       }
       if (unit_and_multiplier == 0xFD) {
@@ -503,8 +510,8 @@ MBusDataType MBusDataRecord::parse_data_type_(const MBusDataRecord *record) {
     case 0x05:
       return MBusDataType::FLOAT;
     case 0x06: {
-      // E110 1101  Time Point (date/time)
-      if (unit_and_multiplier & 0b01101101) {
+      // VIF 0x6D = Time Point (date and time)
+      if (unit_and_multiplier == 0x6D) {
         return MBusDataType::DATE_TIME_48;
       }
       if (unit_and_multiplier == 0xFD) {
@@ -546,25 +553,35 @@ MBusDataType MBusDataRecord::parse_data_type_(const MBusDataRecord *record) {
 float MBusDataRecord::parse_value_(const MBusDataRecord *record, const MBusDataType &data_type) {
   switch (data_type) {
     case MBusDataType::BCD_8:
-      return (uint8_t) MBusDecoder::decode_bcd_int(record->data);
+      return static_cast<float>(static_cast<uint8_t>(MBusDecoder::decode_bcd_int(record->data)));
     case MBusDataType::BCD_16:
-      return (uint16_t) MBusDecoder::decode_bcd_int(record->data);
+      return static_cast<float>(static_cast<uint16_t>(MBusDecoder::decode_bcd_int(record->data)));
     case MBusDataType::BCD_24:
     case MBusDataType::BCD_32:
-      return (uint32_t) MBusDecoder::decode_bcd_int(record->data);
+      return static_cast<float>(static_cast<uint32_t>(MBusDecoder::decode_bcd_int(record->data)));
     case MBusDataType::BCD_48:
-      return (float) MBusDecoder::decode_bcd_int(record->data);
+      return static_cast<float>(MBusDecoder::decode_bcd_int(record->data));
+    case MBusDataType::INT8:
     case MBusDataType::INT16:
     case MBusDataType::INT24:
     case MBusDataType::INT32:
+    case MBusDataType::INT48:
     case MBusDataType::INT64:
-    case MBusDataType::INT8:
-    case MBusDataType::FLOAT:
+      return static_cast<float>(MBusDecoder::decode_int(record->data));
+    case MBusDataType::FLOAT: {
+      if (record->data.size() < 4) {
+        ESP_LOGW(TAG, "FLOAT type requires 4 bytes, got %zu", record->data.size());
+        return 0.0f;
+      }
+      // Type-safe IEEE 754 reinterpretation via memcpy (avoids strict-aliasing UB)
+      float f;
+      memcpy(&f, record->data.data(), 4);
+      return f;
+    }
     default:
       ESP_LOGV(TAG, "Unsupported data type '%d'", data_type);
-      return 0;
+      return 0.0f;
   }
-  return 0;
 }
 
 }  // namespace mbus
